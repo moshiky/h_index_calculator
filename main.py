@@ -53,24 +53,32 @@ def process_dataset_file(dataset_file_path, author_info_manager, paper_info_mana
             update_paper_records(paper_attributes, paper_info_manager)
 
 
-def main(dataset_file_path):
+def main(db_file_path_list):
     # initiate info managers
     print('create managers')
     author_info_manager = AuthorInfoManager()
     paper_info_manager = PaperInfoManager()
 
     # process dataset file
-    print('process dataset file')
-    process_dataset_file(dataset_file_path, author_info_manager, paper_info_manager)
+    print('process dataset files')
+    for db_file_path in db_file_path_list:
+        print('processing file: {file_path}'.format(file_path=db_file_path))
+        process_dataset_file(db_file_path, author_info_manager, paper_info_manager)
 
     # store processed info
-    print('store processed info')
+    print('store author info')
     author_info_manager.store_author_info()
-    paper_info_manager.store_paper_info()
+    # paper_info_manager.store_paper_info()
+    paper_info_manager.store_active_storage()
 
     print('done')
 
 
 if __name__ == '__main__':
-    db_file_path = r'dataset\dblp.v10\dblp-ref\dblp-ref-3.json'
-    main(db_file_path)
+    db_files = [
+        r'dataset\dblp.v10\dblp-ref\dblp-ref-3.json',
+        r'dataset\dblp.v10\dblp-ref\dblp-ref-0.json',
+        r'dataset\dblp.v10\dblp-ref\dblp-ref-1.json',
+        r'dataset\dblp.v10\dblp-ref\dblp-ref-2.json',
+    ]
+    main(db_files)
