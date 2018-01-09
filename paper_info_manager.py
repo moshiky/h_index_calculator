@@ -1,132 +1,173 @@
 
-from random import randint
-import json
+import time
 
 
 class PaperInfoManager:
 
-    MAX_PAPERS_IN_STORAGE_FILE = 500000
-    MAX_LOADED_FILES = 3
+    RECORD_FIELD_SEPARATOR = '#'
+    RECORD_STRUCTURE_YEAR_LENGTH = 4
+    RECORD_STRUCTURE_COUNTER_LENGTH = 4
+    RECORD_STRUCTURE_NUMBER_OF_CITATION_YEARS = 40
+    RECORD_LENGTH = \
+        RECORD_STRUCTURE_YEAR_LENGTH \
+        + 1 \
+        + RECORD_STRUCTURE_NUMBER_OF_CITATION_YEARS * (RECORD_STRUCTURE_YEAR_LENGTH + RECORD_STRUCTURE_COUNTER_LENGTH) \
+        + 1
+
+    MAX_PAPERS_IN_STORAGE_FILE = 320000
+    OPERATION_LOG_INTERVAL = 100
 
     PUBLICATION_YEAR_KEY_NAME = 'y'
     CITATION_INFO_KEY_NAME = 'c'
     STORAGE_FILE_PATH_FORMAT = r'storage/papers_{file_id}.json'
-    PAPER_INFO_STORAGE_FILE_PATH = r'storage/papers.json'
 
     def __init__(self):
-
-        self.__current_file_index = 0
-        self.__file_swaps = 0
+        self.__records_in_current_storage_file = 0
+        self.__working_storage_file_index = 0
         self.__operation_counter = 0
-
-        self.__working_storage = dict()
-        self.__working_storage_file_path = \
-            PaperInfoManager.STORAGE_FILE_PATH_FORMAT.format(file_id=self.__current_file_index)
-
-        # structure: [ ( storage_dict , storage_file_path ) , ( ... ) , ... ]
-        self.__loaded_storage_list = list()
         self.__paper_storage_mapping = dict()
 
-    def __store_papers_info(self, papers_info, file_path):
-        info_to_store = json.dumps(papers_info)
-        with open(file_path, 'wt') as loaded_storage_file:
-            loaded_storage_file.write(info_to_store)
+    def __record_data_to_paper_record(self, record_data):
+        paper_record = dict()
+        current_index = 0
 
-    def __load_storage_file_from_disk(self, storage_file_path, storage_index=None):
-        # read file content
-        with open(storage_file_path, 'rt') as storage_file:
-            storage_file_content = storage_file.read()
+        # parse publication year info
+        paper_record[PaperInfoManager.PUBLICATION_YEAR_KEY_NAME] = \
+            int(
+                record_data[
+                    current_index
+                    :(current_index + PaperInfoManager.RECORD_STRUCTURE_YEAR_LENGTH)
+                ]
+            )
+        if paper_record[PaperInfoManager.PUBLICATION_YEAR_KEY_NAME] == 0:
+            paper_record[PaperInfoManager.PUBLICATION_YEAR_KEY_NAME] = None
+        current_index += PaperInfoManager.RECORD_STRUCTURE_YEAR_LENGTH + 1
 
-        # parse as json and set instance members
-        parsed_content = json.loads(storage_file_content)
+        # parse citation info
+        paper_record[PaperInfoManager.CITATION_INFO_KEY_NAME] = dict()
+        for citation_year_index in range(PaperInfoManager.RECORD_STRUCTURE_NUMBER_OF_CITATION_YEARS):
+            if record_data[current_index] == PaperInfoManager.RECORD_FIELD_SEPARATOR:
+                break
 
-        # store in storage list
-        if storage_index is not None:
-            self.__loaded_storage_list[storage_index] = [parsed_content, storage_file_path]
+            citation_year = \
+                record_data[current_index:current_index+PaperInfoManager.RECORD_STRUCTURE_YEAR_LENGTH]
+            current_index += PaperInfoManager.RECORD_STRUCTURE_YEAR_LENGTH
+            citation_count = \
+                int(
+                    record_data[current_index:current_index+PaperInfoManager.RECORD_STRUCTURE_COUNTER_LENGTH]
+                    .replace(PaperInfoManager.RECORD_FIELD_SEPARATOR, '')
+                )
+            current_index += PaperInfoManager.RECORD_STRUCTURE_COUNTER_LENGTH
+
+            paper_record[PaperInfoManager.CITATION_INFO_KEY_NAME][citation_year] = citation_count
+
+        # return parsed record
+        return paper_record
+
+    def __paper_record_to_record_data(self, paper_record):
+        record_data = str()
+
+        # encode publication year info
+        if paper_record[PaperInfoManager.PUBLICATION_YEAR_KEY_NAME] is not None:
+            record_data += str(paper_record[PaperInfoManager.PUBLICATION_YEAR_KEY_NAME])
         else:
-            self.__loaded_storage_list.append([parsed_content, storage_file_path])
-            storage_index = len(self.__loaded_storage_list) - 1
+            record_data += '0'.rjust(PaperInfoManager.RECORD_STRUCTURE_YEAR_LENGTH, '0')
+        record_data += PaperInfoManager.RECORD_FIELD_SEPARATOR
 
-        # return loaded storage
-        return self.__loaded_storage_list[storage_index][0]
+        # encode citation history
+        for citation_year in paper_record[PaperInfoManager.CITATION_INFO_KEY_NAME].keys():
+            citation_count_string = str(paper_record[PaperInfoManager.CITATION_INFO_KEY_NAME][citation_year])
+            if len(citation_count_string) > PaperInfoManager.RECORD_STRUCTURE_COUNTER_LENGTH:
+                raise Exception('RECORD COUNTER TOO HIGH!!!')
 
-    def __load_storage_file(self, file_path_to_load):
-        loaded_storage = None
-
-        # check if need to swap
-        if len(self.__loaded_storage_list) < PaperInfoManager.MAX_LOADED_FILES:
-            # load requested storage file
-            loaded_storage = self.__load_storage_file_from_disk(file_path_to_load)
-
-        else:
-            print('swapping loaded file. sw#{swap_id} op#{op_id}'.format(
-                swap_id=self.__file_swaps, op_id=self.__operation_counter))
-            self.__file_swaps += 1
-
-            # need to replace existing storage
-            # select random index to swap
-            storage_index_to_swap = randint(0, len(self.__loaded_storage_list)-1)
-
-            # store selected storage
-            self.__store_papers_info(
-                self.__loaded_storage_list[storage_index_to_swap][0],
-                self.__loaded_storage_list[storage_index_to_swap][1]
+            citation_count_string = citation_count_string.rjust(
+                PaperInfoManager.RECORD_STRUCTURE_COUNTER_LENGTH, PaperInfoManager.RECORD_FIELD_SEPARATOR
             )
 
-            # load requested storage file
-            loaded_storage = self.__load_storage_file_from_disk(file_path_to_load, storage_index_to_swap)
+            record_data += citation_year + citation_count_string
 
-            print('done swapping')
+        # pad spare space
+        added_records = len(paper_record[PaperInfoManager.CITATION_INFO_KEY_NAME])
+        pad_length = \
+            (PaperInfoManager.RECORD_STRUCTURE_NUMBER_OF_CITATION_YEARS - added_records) \
+            * (PaperInfoManager.RECORD_STRUCTURE_YEAR_LENGTH + PaperInfoManager.RECORD_STRUCTURE_COUNTER_LENGTH)
+        record_data += PaperInfoManager.RECORD_FIELD_SEPARATOR * pad_length
 
-        return loaded_storage
+        record_data += PaperInfoManager.RECORD_FIELD_SEPARATOR
+        return record_data
 
-    def __get_paper_record_from_loaded_storage(self, paper_id, paper_storage_file_path):
-        # search loaded storage
-        for storage_index in range(len(self.__loaded_storage_list)):
-            if self.__loaded_storage_list[storage_index][1] == paper_storage_file_path:
-                return self.__loaded_storage_list[storage_index][0][paper_id]
+    def __get_record_from_storage(self, record_id):
+        # split record_id to get storage file index and relative record index
+        storage_file_index, record_index = record_id.split('_')
+        storage_file_index = int(storage_file_index)
+        record_index = int(record_index)
 
-        # not found in loaded storage
-        return None
+        # calculate record offset from file start
+        record_offset = record_index * PaperInfoManager.RECORD_LENGTH
+
+        # build file path and read record data
+        storage_file_path = PaperInfoManager.STORAGE_FILE_PATH_FORMAT.format(file_id=storage_file_index)
+        with open(storage_file_path, 'rt') as storage_file:
+            storage_file.seek(record_offset, 0)
+            record_data = storage_file.read(PaperInfoManager.RECORD_LENGTH)
+
+        # parse record_data into paper record structure
+        return self.__record_data_to_paper_record(record_data)
+
+    def __store_record_to_storage(self, record_id, paper_record):
+        # split record_id to get storage file index and relative record index
+        storage_file_index, record_index = record_id.split('_')
+        storage_file_index = int(storage_file_index)
+        record_index = int(record_index)
+
+        # calculate record offset from file start
+        record_offset = record_index * PaperInfoManager.RECORD_LENGTH
+
+        # build file path and read record data
+        storage_file_path = PaperInfoManager.STORAGE_FILE_PATH_FORMAT.format(file_id=storage_file_index)
+        record_data = self.__paper_record_to_record_data(paper_record)
+        with open(storage_file_path, 'at') as storage_file:
+            storage_file.seek(record_offset, 0)
+            storage_file.write(record_data)
 
     def __get_paper_record(self, paper_id):
-        # get paper storage file name
-        paper_storage_file_path = self.__paper_storage_mapping[paper_id]
+        # get paper record_id
+        paper_record_id = self.get_paper_record_id(paper_id)
 
-        # first check in working storage
-        if paper_storage_file_path == self.__working_storage_file_path:
-            return self.__working_storage[paper_id]
+        # return record from storage
+        return self.__get_record_from_storage(paper_record_id)
 
-        # second check in loaded storage files
-        loaded_storage_record = self.__get_paper_record_from_loaded_storage(paper_id, paper_storage_file_path)
-        if loaded_storage_record is not None:
-            return loaded_storage_record
+    def __store_paper_record(self, paper_id, paper_record):
+        # get paper record_id
+        paper_record_id = self.get_paper_record_id(paper_id)
 
-        # if got here- need to switch loaded file
-        else:
-            loaded_storage = self.__load_storage_file(paper_storage_file_path)
-            return loaded_storage[paper_id]
+        # store paper record
+        self.__store_record_to_storage(paper_record_id, paper_record)
 
     def __create_new_paper_record(self, paper_id, paper_year):
-        # store working storage in case it reached max records
-        if len(self.__working_storage.keys()) == PaperInfoManager.MAX_PAPERS_IN_STORAGE_FILE:
-            # store working storage
-            self.__store_papers_info(self.__working_storage, self.__working_storage_file_path)
+        # check if need to move to new storage file
+        if self.__records_in_current_storage_file == PaperInfoManager.MAX_PAPERS_IN_STORAGE_FILE:
+            # increase working file index and initiate records counter
+            self.__working_storage_file_index += 1
+            self.__records_in_current_storage_file = 0
 
-            # move to next storage file
-            self.__current_file_index += 1
-            self.__working_storage = dict()
-            self.__working_storage_file_path = \
-                PaperInfoManager.STORAGE_FILE_PATH_FORMAT.format(file_id=self.__current_file_index)
+        # allocate record_id
+        record_id = '{storage_file_index}_{record_index}'.format(
+            storage_file_index=self.__working_storage_file_index, record_index=self.__records_in_current_storage_file
+        )
+        self.__records_in_current_storage_file += 1
 
-        # add paper record to working storage
-        self.__working_storage[paper_id] = {
+        # store mapping
+        self.__paper_storage_mapping[paper_id] = record_id
+
+        # build record
+        paper_record = {
             PaperInfoManager.PUBLICATION_YEAR_KEY_NAME: paper_year,
             PaperInfoManager.CITATION_INFO_KEY_NAME: dict()
         }
 
-        # update paper storage mapping
-        self.__paper_storage_mapping[paper_id] = self.__working_storage_file_path
+        # store record to working file
+        self.__store_paper_record(paper_id, paper_record)
 
     def __add_citation_year(self, paper_id, citation_year):
         # get paper record
@@ -138,45 +179,61 @@ class PaperInfoManager:
 
         paper_record[PaperInfoManager.CITATION_INFO_KEY_NAME][citation_year] += 1
 
+        # store changes
+        self.__store_paper_record(paper_id, paper_record)
+
     def add_paper(self, paper_id, paper_year):
-        self.__operation_counter += 1
+        self.__increase_operation_counter()
 
         # verify a paper is'nt added twice
-        if paper_id in self.__paper_storage_mapping.keys():
+        if self.get_paper_record_id(paper_id) is not None:
 
             # get paper record
             paper_record = self.__get_paper_record(paper_id)
 
             if paper_record[PaperInfoManager.PUBLICATION_YEAR_KEY_NAME] is not None:
-                raise Exception('paper {paper_id} already in storage'.format(paper_id=paper_id))
+                print('ERROR: paper {paper_id} already in storage. pub_year={pub_year} history={citation_history}'
+                    .format(
+                        paper_id=paper_id, pub_year=paper_record[PaperInfoManager.PUBLICATION_YEAR_KEY_NAME],
+                        citation_history=paper_record[PaperInfoManager.CITATION_INFO_KEY_NAME]
+                    )
+                )
+                return False
 
             else:
                 # empty paper record created when other paper cited it before
                 # so only need to set the publication year
                 paper_record[PaperInfoManager.PUBLICATION_YEAR_KEY_NAME] = paper_year
+                # store changes
+                self.__store_paper_record(paper_id, paper_record)
 
         else:
             # create new paper record
             self.__create_new_paper_record(paper_id, paper_year)
 
+        return True
+
     def add_citation(self, paper_id, citation_year):
-        self.__operation_counter += 1
+        self.__increase_operation_counter()
 
         # verify paper is in  storage
-        if paper_id not in self.__paper_storage_mapping.keys():
+        if self.get_paper_record_id(paper_id) is None:
             # create empty paper record
             self.__create_new_paper_record(paper_id, None)
 
         # add one to citation count
         self.__add_citation_year(paper_id, citation_year)
 
-    def store_active_storage(self):
-        # store working storage
-        self.__store_papers_info(self.__working_storage, self.__working_storage_file_path)
-
-        # store current loaded file
-        for storage_index in range(len(self.__loaded_storage_list)):
-            self.__store_papers_info(
-                self.__loaded_storage_list[storage_index][0],
-                self.__loaded_storage_list[storage_index][1]
+    def __increase_operation_counter(self):
+        self.__operation_counter += 1
+        if (self.__operation_counter % PaperInfoManager.OPERATION_LOG_INTERVAL) == 0:
+            print('[{timestamp}] >> op #{op_id} papers: {papers_count}'.format(
+                timestamp=time.ctime(),
+                op_id=self.__operation_counter, papers_count=len(self.__paper_storage_mapping))
             )
+
+    def get_paper_record_id(self, paper_id):
+        if paper_id in self.__paper_storage_mapping.keys():
+            return self.__paper_storage_mapping[paper_id]
+        else:
+            return None

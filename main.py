@@ -13,15 +13,16 @@ REFERENCES_FIELD_NAME = 'references'
 def update_paper_records(paper_record, paper_info_manager):
     # extract required fields
     paper_id = paper_record[PAPER_ID_FIELD_NAME]
-    paper_year = paper_record[PAPER_YEAR_FIELD_NAME]
+    paper_year = str(paper_record[PAPER_YEAR_FIELD_NAME])
     references = paper_record[REFERENCES_FIELD_NAME] if REFERENCES_FIELD_NAME in paper_record.keys() else list()
 
     # add new paper record
-    paper_info_manager.add_paper(paper_id, paper_year)
-
-    # update citation info
-    for referenced_paper_id in references:
-        paper_info_manager.add_citation(referenced_paper_id, paper_year)
+    if paper_info_manager.add_paper(paper_id, paper_year):
+        # update citation info
+        for referenced_paper_id in references:
+            paper_info_manager.add_citation(referenced_paper_id, paper_year)
+    else:
+        print('ignoring citation history: {citation_history}'.format(citation_history=references))
 
 
 def update_author_records(paper_record, author_info_manager):
@@ -46,11 +47,13 @@ def process_dataset_file(dataset_file_path, author_info_manager, paper_info_mana
             # parse line as json
             paper_attributes = json.loads(file_line)
 
-            # update authors
-            update_author_records(paper_attributes, author_info_manager)
-
             # update papers
             update_paper_records(paper_attributes, paper_info_manager)
+
+            # update authors
+            paper_attributes[PAPER_ID_FIELD_NAME] = \
+                paper_info_manager.get_paper_record_id(paper_attributes[PAPER_ID_FIELD_NAME])
+            update_author_records(paper_attributes, author_info_manager)
 
 
 def main(db_file_path_list):
@@ -68,8 +71,6 @@ def main(db_file_path_list):
     # store processed info
     print('store author info')
     author_info_manager.store_author_info()
-    # paper_info_manager.store_paper_info()
-    paper_info_manager.store_active_storage()
 
     print('done')
 
