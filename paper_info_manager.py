@@ -1,4 +1,5 @@
 
+import os
 import time
 
 
@@ -26,6 +27,18 @@ class PaperInfoManager:
         self.__working_storage_file_index = 0
         self.__operation_counter = 0
         self.__paper_storage_mapping = dict()
+        self.__file_handlers = dict()
+
+    def __get_storage_file_handler(self, file_path):
+        # check if file already open
+        if file_path in self.__file_handlers.keys():
+            return self.__file_handlers[file_path]
+
+        else:
+            # need to open the file and store its handler
+            file_handler = open(file_path, 'w+')
+            self.__file_handlers[file_path] = file_handler
+            return file_handler
 
     def __record_data_to_paper_record(self, record_data):
         paper_record = dict()
@@ -107,9 +120,11 @@ class PaperInfoManager:
 
         # build file path and read record data
         storage_file_path = PaperInfoManager.STORAGE_FILE_PATH_FORMAT.format(file_id=storage_file_index)
-        with open(storage_file_path, 'rt') as storage_file:
-            storage_file.seek(record_offset, 0)
-            record_data = storage_file.read(PaperInfoManager.RECORD_LENGTH)
+        storage_file = self.__get_storage_file_handler(storage_file_path)
+        storage_file.flush()
+        storage_file.seek(record_offset, 0)
+        record_data = storage_file.read(PaperInfoManager.RECORD_LENGTH)
+        storage_file.flush()
 
         # parse record_data into paper record structure
         return self.__record_data_to_paper_record(record_data)
@@ -126,9 +141,14 @@ class PaperInfoManager:
         # build file path and read record data
         storage_file_path = PaperInfoManager.STORAGE_FILE_PATH_FORMAT.format(file_id=storage_file_index)
         record_data = self.__paper_record_to_record_data(paper_record)
-        with open(storage_file_path, 'at') as storage_file:
-            storage_file.seek(record_offset, 0)
-            storage_file.write(record_data)
+
+        storage_file = self.__get_storage_file_handler(storage_file_path)
+        storage_file.flush()
+        os.fsync(storage_file)
+        storage_file.seek(record_offset, 0)
+        storage_file.write(record_data)
+        storage_file.flush()
+        os.fsync(storage_file)
 
     def __get_paper_record(self, paper_id):
         # get paper record_id
