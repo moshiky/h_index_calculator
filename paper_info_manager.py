@@ -1,6 +1,7 @@
 
 import os
 import time
+import json
 
 
 class PaperInfoManager:
@@ -8,19 +9,22 @@ class PaperInfoManager:
     RECORD_FIELD_SEPARATOR = '#'
     RECORD_STRUCTURE_YEAR_LENGTH = 4
     RECORD_STRUCTURE_COUNTER_LENGTH = 4
-    RECORD_STRUCTURE_NUMBER_OF_CITATION_YEARS = 40
+    RECORD_STRUCTURE_NUMBER_OF_CITATION_YEARS = 60
     RECORD_LENGTH = \
         RECORD_STRUCTURE_YEAR_LENGTH \
         + 1 \
         + RECORD_STRUCTURE_NUMBER_OF_CITATION_YEARS * (RECORD_STRUCTURE_YEAR_LENGTH + RECORD_STRUCTURE_COUNTER_LENGTH) \
         + 1
 
-    MAX_PAPERS_IN_STORAGE_FILE = 320000
-    OPERATION_LOG_INTERVAL = 100
+    MAX_PAPERS_IN_STORAGE_FILE = 250000
+    OPERATION_LOG_INTERVAL = 1000
+    MAX_CACHE_SIZE = 750000
+    CACHE_CLEANING_FACTOR = 0.01
 
     PUBLICATION_YEAR_KEY_NAME = 'y'
     CITATION_INFO_KEY_NAME = 'c'
     STORAGE_FILE_PATH_FORMAT = r'storage/papers_{file_id}.json'
+    MAPPING_FILE_PATH = r'storage/papers_name_mapping.json'
 
     def __init__(self):
         self.__records_in_current_storage_file = 0
@@ -28,6 +32,7 @@ class PaperInfoManager:
         self.__operation_counter = 0
         self.__paper_storage_mapping = dict()
         self.__file_handlers = dict()
+        self.__record_cache = dict()
 
     def __get_storage_file_handler(self, file_path):
         # check if file already open
@@ -88,7 +93,19 @@ class PaperInfoManager:
         record_data += PaperInfoManager.RECORD_FIELD_SEPARATOR
 
         # encode citation history
-        for citation_year in paper_record[PaperInfoManager.CITATION_INFO_KEY_NAME].keys():
+        if len(paper_record[PaperInfoManager.CITATION_INFO_KEY_NAME].keys()) \
+                > PaperInfoManager.RECORD_STRUCTURE_NUMBER_OF_CITATION_YEARS:
+            print('WARNING: paper has too many citation years! num={citation_count}'
+                  .format(citation_count=len(paper_record[PaperInfoManager.CITATION_INFO_KEY_NAME].keys())))
+
+        # in case there is too many citation years- selects newest years first and skip the beginning
+        sorted_keys = list(paper_record[PaperInfoManager.CITATION_INFO_KEY_NAME].keys())
+        sorted_keys.sort()
+        sorted_keys.reverse()
+        year_key_index = 0
+        while year_key_index < len(sorted_keys) \
+                and year_key_index < PaperInfoManager.RECORD_STRUCTURE_NUMBER_OF_CITATION_YEARS:
+            citation_year = sorted_keys[year_key_index]
             citation_count_string = str(paper_record[PaperInfoManager.CITATION_INFO_KEY_NAME][citation_year])
             if len(citation_count_string) > PaperInfoManager.RECORD_STRUCTURE_COUNTER_LENGTH:
                 raise Exception('RECORD COUNTER TOO HIGH!!!')
@@ -98,6 +115,7 @@ class PaperInfoManager:
             )
 
             record_data += citation_year + citation_count_string
+            year_key_index += 1
 
         # pad spare space
         added_records = len(paper_record[PaperInfoManager.CITATION_INFO_KEY_NAME])
@@ -127,7 +145,14 @@ class PaperInfoManager:
         storage_file.flush()
 
         # parse record_data into paper record structure
-        return self.__record_data_to_paper_record(record_data)
+        try:
+            paper_record = self.__record_data_to_paper_record(record_data)
+        except Exception as ex:
+            print('Error: failed converting to paper record')
+            print('offset= {offset}'.format(offset=record_offset))
+            raise ex
+
+        return paper_record
 
     def __store_record_to_storage(self, record_id, paper_record):
         # split record_id to get storage file index and relative record index
@@ -150,19 +175,49 @@ class PaperInfoManager:
         storage_file.flush()
         os.fsync(storage_file)
 
+    def __clean_cache(self, clean_factor=CACHE_CLEANING_FACTOR):
+        # calculate how much records to move
+        cache_keys = list(self.__record_cache.keys())
+        cache_keys.sort()
+        records_count = int(len(cache_keys) * clean_factor)
+
+        # move records and remove from cache
+        print('cleaning {num_records} records..'.format(num_records=records_count))
+        for i in range(records_count):
+            if (i % PaperInfoManager.OPERATION_LOG_INTERVAL) == 0:
+                print('record #{record_index}'.format(record_index=i))
+
+            self.__store_record_to_storage(cache_keys[i], self.__record_cache.pop(cache_keys[i]))
+
+    def __add_record_to_cache(self, record_id, paper_record):
+        # verify there is room for the record
+        if len(self.__record_cache.keys()) == PaperInfoManager.MAX_CACHE_SIZE:
+            # move records to storage
+            self.__clean_cache()
+
+        self.__record_cache[record_id] = paper_record
+
     def __get_paper_record(self, paper_id):
         # get paper record_id
         paper_record_id = self.get_paper_record_id(paper_id)
 
-        # return record from storage
-        return self.__get_record_from_storage(paper_record_id)
+        # verify record is in cache
+        if paper_record_id not in self.__record_cache.keys():
+            # load record form storage
+            paper_record = self.__get_record_from_storage(paper_record_id)
+
+            # store record in cache
+            self.__add_record_to_cache(paper_record_id, paper_record)
+
+        # return record from cache
+        return self.__record_cache[paper_record_id]
 
     def __store_paper_record(self, paper_id, paper_record):
         # get paper record_id
         paper_record_id = self.get_paper_record_id(paper_id)
 
         # store paper record
-        self.__store_record_to_storage(paper_record_id, paper_record)
+        self.__add_record_to_cache(paper_record_id, paper_record)
 
     def __create_new_paper_record(self, paper_id, paper_year):
         # check if need to move to new storage file
@@ -173,7 +228,10 @@ class PaperInfoManager:
 
         # allocate record_id
         record_id = '{storage_file_index}_{record_index}'.format(
-            storage_file_index=self.__working_storage_file_index, record_index=self.__records_in_current_storage_file
+            storage_file_index=self.__working_storage_file_index,
+            record_index=
+                str(self.__records_in_current_storage_file)
+                    .rjust(len(str(PaperInfoManager.MAX_PAPERS_IN_STORAGE_FILE)), '0')
         )
         self.__records_in_current_storage_file += 1
 
@@ -199,9 +257,6 @@ class PaperInfoManager:
 
         paper_record[PaperInfoManager.CITATION_INFO_KEY_NAME][citation_year] += 1
 
-        # store changes
-        self.__store_paper_record(paper_id, paper_record)
-
     def add_paper(self, paper_id, paper_year):
         self.__increase_operation_counter()
 
@@ -224,8 +279,6 @@ class PaperInfoManager:
                 # empty paper record created when other paper cited it before
                 # so only need to set the publication year
                 paper_record[PaperInfoManager.PUBLICATION_YEAR_KEY_NAME] = paper_year
-                # store changes
-                self.__store_paper_record(paper_id, paper_record)
 
         else:
             # create new paper record
@@ -257,3 +310,18 @@ class PaperInfoManager:
             return self.__paper_storage_mapping[paper_id]
         else:
             return None
+
+    def store_cache(self):
+        print('storing all cache')
+        self.__clean_cache(clean_factor=1.0)
+
+        # store mapping
+        self.__store_name_mapping()
+
+    def __store_name_mapping(self):
+        # convert name mapping to json string
+        mapping_as_string = json.dumps(self.__paper_storage_mapping)
+
+        # store string to file
+        with open(PaperInfoManager.MAPPING_FILE_PATH, 'wt') as output_file:
+            output_file.write(mapping_as_string)

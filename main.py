@@ -17,13 +17,22 @@ def update_paper_records(paper_record, paper_info_manager):
     references = paper_record[REFERENCES_FIELD_NAME] if REFERENCES_FIELD_NAME in paper_record.keys() else list()
 
     # add new paper record
-    if paper_info_manager.add_paper(paper_id, paper_year):
-        # update citation info
-        for referenced_paper_id in references:
-            paper_info_manager.add_citation(referenced_paper_id, paper_year)
-    else:
-        print('ignoring citation history: {citation_history}'.format(citation_history=references))
+    try:
+        paper_info_manager.add_paper(paper_id, paper_year)
+    except Exception as ex:
+        print('Error: failed to add paper')
+        raise ex
 
+    # update citation info
+    added_references = list()
+    for referenced_paper_id in references:
+        try:
+            paper_info_manager.add_citation(referenced_paper_id, paper_year)
+        except Exception as ex:
+            print('Error: failed to add paper citation. referenced paper id={ref_id} added={added} all={all_refs}'
+                  .format(ref_id=referenced_paper_id, added=added_references, all_refs=references))
+            raise ex
+        added_references.append(referenced_paper_id)
 
 def update_author_records(paper_record, author_info_manager):
     # extract required fields
@@ -31,29 +40,59 @@ def update_author_records(paper_record, author_info_manager):
     author_list = list(set(paper_record[AUTHOR_LIST_FIELD_NAME]))
 
     # iterate paper's authors and update each one
+    added_authors = list()
     for author_id in author_list:
         # make author list without current author
         co_authors = list(author_list)
         co_authors.remove(author_id)
 
         # update author information
-        author_info_manager.add_author_publication(author_id, paper_id, co_authors)
+        try:
+            author_info_manager.add_author_publication(author_id, paper_id, co_authors)
+        except Exception as ex:
+            print('ERROR: failed to add author publication. author={author_id} paper={paper_id} added={added} all={all_authors}'
+                  .format(author_id=author_id, paper_id=paper_id, added=added_authors, all_authors=author_list))
+            raise ex
+        added_authors.append(author_id)
 
 
 def process_dataset_file(dataset_file_path, author_info_manager, paper_info_manager):
     # read file
+    line_index = 0
     with open(dataset_file_path, 'rt') as dataset_file:
         for file_line in dataset_file:
-            # parse line as json
-            paper_attributes = json.loads(file_line)
+            try:
+                # parse line as json
+                try:
+                    paper_attributes = json.loads(file_line)
+                except Exception as ex:
+                    print('ERROR: failed to load line as json')
+                    raise ex
 
-            # update papers
-            update_paper_records(paper_attributes, paper_info_manager)
+                # update papers
+                try:
+                    update_paper_records(paper_attributes, paper_info_manager)
+                except Exception as ex:
+                    print('ERROR: failed to update papers')
+                    raise ex
 
-            # update authors
-            paper_attributes[PAPER_ID_FIELD_NAME] = \
-                paper_info_manager.get_paper_record_id(paper_attributes[PAPER_ID_FIELD_NAME])
-            update_author_records(paper_attributes, author_info_manager)
+                # update authors
+                paper_attributes[PAPER_ID_FIELD_NAME] = \
+                    paper_info_manager.get_paper_record_id(paper_attributes[PAPER_ID_FIELD_NAME])
+                try:
+                    update_author_records(paper_attributes, author_info_manager)
+                except Exception as ex:
+                    print('ERROR: failed to update authors. paper record id={record_id}'
+                          .format(record_id=paper_attributes[PAPER_ID_FIELD_NAME]))
+                    raise ex
+
+                # increase line index
+                line_index += 1
+
+            except Exception as ex:
+                print('line#{line_index} file={file_path} line="{line_text}"'
+                      .format(line_index=line_index, file_path=dataset_file_path, line_text=file_line))
+                raise ex
 
 
 def main(db_file_path_list):
@@ -71,6 +110,8 @@ def main(db_file_path_list):
     # store processed info
     print('store author info')
     author_info_manager.store_author_info()
+    print('store cached paper info')
+    paper_info_manager.store_cache()
 
     print('done')
 
