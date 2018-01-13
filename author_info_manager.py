@@ -41,3 +41,13 @@ class AuthorInfoManager:
 
         with open(AuthorInfoManager.AUTHOR_STORAGE_FILE_PATH, 'wt') as storage_file:
             storage_file.write(info_as_string)
+
+    def load_author_info(self):
+        print('loading author info from storage..')
+
+        with open(AuthorInfoManager.AUTHOR_STORAGE_FILE_PATH, 'rt') as storage_file:
+            file_content = storage_file.read()
+
+        print('parsing as json..')
+        self.__authors = json.loads(file_content)
+        print('num of loaded authors: ' + str(len(self.__authors.keys())))

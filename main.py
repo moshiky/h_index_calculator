@@ -34,6 +34,7 @@ def update_paper_records(paper_record, paper_info_manager):
             raise ex
         added_references.append(referenced_paper_id)
 
+
 def update_author_records(paper_record, author_info_manager):
     # extract required fields
     paper_id = paper_record[PAPER_ID_FIELD_NAME]
@@ -56,11 +57,19 @@ def update_author_records(paper_record, author_info_manager):
         added_authors.append(author_id)
 
 
-def process_dataset_file(dataset_file_path, author_info_manager, paper_info_manager):
+def process_dataset_file(dataset_file_info, author_info_manager, paper_info_manager):
     # read file
     line_index = 0
+    dataset_file_path = dataset_file_info[0]
+    first_line = dataset_file_info[1]
+    failed_lines = list()
+
     with open(dataset_file_path, 'rt') as dataset_file:
         for file_line in dataset_file:
+            if line_index < first_line:
+                line_index += 1
+                continue
+
             try:
                 # parse line as json
                 try:
@@ -68,6 +77,24 @@ def process_dataset_file(dataset_file_path, author_info_manager, paper_info_mana
                 except Exception as ex:
                     print('ERROR: failed to load line as json')
                     raise ex
+
+                # validate required fields exists
+                record_ok = True
+                required_fields = [
+                    PAPER_ID_FIELD_NAME,
+                    AUTHOR_LIST_FIELD_NAME,
+                    PAPER_YEAR_FIELD_NAME
+                ]
+                for field_name in required_fields:
+                    if field_name not in paper_attributes.keys():
+                        print('Warning: missing paper information. '
+                              'line#{line_index} line={line} paper record={paper_info}'
+                              .format(line_index=line_index, line=file_line, paper_info=paper_attributes))
+                        record_ok = False
+                        break
+                if not record_ok:
+                    print('skipping paper')
+                    continue
 
                 # update papers
                 try:
@@ -91,36 +118,62 @@ def process_dataset_file(dataset_file_path, author_info_manager, paper_info_mana
 
             except Exception as ex:
                 print('line#{line_index} file={file_path} line="{line_text}"'
-                      .format(line_index=line_index, file_path=dataset_file_path, line_text=file_line))
-                raise ex
+                      .format(line_index=line_index, file_path=dataset_file_info, line_text=file_line))
+                print('exception: {ex}'.format(ex=ex))
+                failed_lines.append({
+                    'file_path': dataset_file_path,
+                    'line_index': line_index,
+                    'line_text': file_line,
+                    'exception': ex
+                })
+                print('failed lines in current file: {num_lines}'.format(num_lines=len(failed_lines)))
+
+    return failed_lines
 
 
-def main(db_file_path_list):
-    # initiate info managers
-    print('create managers')
-    author_info_manager = AuthorInfoManager()
-    paper_info_manager = PaperInfoManager()
-
-    # process dataset file
-    print('process dataset files')
-    for db_file_path in db_file_path_list:
-        print('processing file: {file_path}'.format(file_path=db_file_path))
-        process_dataset_file(db_file_path, author_info_manager, paper_info_manager)
-
+def make_clean_exit(author_info_manager, paper_info_manager):
     # store processed info
     print('store author info')
     author_info_manager.store_author_info()
     print('store cached paper info')
     paper_info_manager.store_cache()
 
+
+def main(db_file_info_list, should_load_state=False):
+    # initiate info managers
+    print('create managers')
+    author_info_manager = AuthorInfoManager()
+    paper_info_manager = PaperInfoManager()
+
+    # load state if needed
+    if should_load_state:
+        author_info_manager.load_author_info()
+        paper_info_manager.restore_stored_state()
+
+    # process dataset file
+    failed_lines = list()
+    print('process dataset files')
+    for db_file_info in db_file_info_list:
+        print('processing file: {file_info}'.format(file_info=db_file_info))
+        file_failed_lines = process_dataset_file(db_file_info, author_info_manager, paper_info_manager)
+        failed_lines.append(file_failed_lines)
+
+    # print failed lines
+    if len(failed_lines) > 0:
+        print('#### {num_lines} failed lines'.format(num_lines=len(failed_lines)))
+        # print(failed_lines)
+
+    # store volatile information
+    make_clean_exit(author_info_manager, paper_info_manager)
+
     print('done')
 
 
 if __name__ == '__main__':
     db_files = [
-        r'dataset\dblp.v10\dblp-ref\dblp-ref-3.json',
-        r'dataset\dblp.v10\dblp-ref\dblp-ref-0.json',
-        r'dataset\dblp.v10\dblp-ref\dblp-ref-1.json',
-        r'dataset\dblp.v10\dblp-ref\dblp-ref-2.json',
+        [r'dataset\dblp.v10\dblp-ref\dblp-ref-0.json', 0],
+        [r'dataset\dblp.v10\dblp-ref\dblp-ref-1.json', 0],
+        [r'dataset\dblp.v10\dblp-ref\dblp-ref-2.json', 0],
+        [r'dataset\dblp.v10\dblp-ref\dblp-ref-3.json', 0],
     ]
     main(db_files)

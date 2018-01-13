@@ -17,8 +17,8 @@ class PaperInfoManager:
         + 1
 
     MAX_PAPERS_IN_STORAGE_FILE = 250000
-    OPERATION_LOG_INTERVAL = 1000
-    MAX_CACHE_SIZE = 750000
+    OPERATION_LOG_INTERVAL = 10000
+    MAX_CACHE_SIZE = 4000000
     CACHE_CLEANING_FACTOR = 0.01
 
     PUBLICATION_YEAR_KEY_NAME = 'y'
@@ -313,7 +313,9 @@ class PaperInfoManager:
 
     def store_cache(self):
         print('storing all cache')
-        self.__clean_cache(clean_factor=1.0)
+        for i in range(self.__working_storage_file_index + 1):
+            self.__store_full_file(i)
+        # self.__clean_cache(clean_factor=1.0)
 
         # store mapping
         self.__store_name_mapping()
@@ -325,3 +327,41 @@ class PaperInfoManager:
         # store string to file
         with open(PaperInfoManager.MAPPING_FILE_PATH, 'wt') as output_file:
             output_file.write(mapping_as_string)
+
+    def restore_stored_state(self):
+        # 1. load name mapping
+        print('load name mapping..')
+        with open(PaperInfoManager.MAPPING_FILE_PATH, 'rt') as name_mapping_file:
+            mapping_file_content = name_mapping_file.read()
+        # parse mapping as json
+        self.__paper_storage_mapping = json.loads(mapping_file_content)
+
+        # 2. calculate __working_storage_file_index and __records_in_current_storage_file
+        number_of_loaded_papers = len(self.__paper_storage_mapping.keys())
+        self.__working_storage_file_index = int(number_of_loaded_papers / PaperInfoManager.MAX_PAPERS_IN_STORAGE_FILE)
+        self.__records_in_current_storage_file = \
+            number_of_loaded_papers \
+            - (self.__working_storage_file_index * PaperInfoManager.MAX_PAPERS_IN_STORAGE_FILE)
+
+    def __store_full_file(self, file_index):
+        print('storing full file: index={file_index}'.format(file_index=file_index))
+
+        file_content = str()
+        for record_index in range(PaperInfoManager.MAX_PAPERS_IN_STORAGE_FILE):
+            if (record_index % 100) == 0:
+                print('record # {record_index}/{total_in_file}'
+                      .format(record_index=record_index, total_in_file=PaperInfoManager.MAX_PAPERS_IN_STORAGE_FILE))
+
+            paper_record_id = '{file_index}_{record_index}'.format(
+                file_index=file_index,
+                record_index=str(record_index).rjust(len(str(PaperInfoManager.MAX_PAPERS_IN_STORAGE_FILE)), '0')
+            )
+            if paper_record_id in self.__record_cache:
+                paper_record_string = self.__paper_record_to_record_data(self.__record_cache.pop(paper_record_id))
+                file_content += paper_record_string
+            else:
+                break
+
+        storage_file_path = PaperInfoManager.STORAGE_FILE_PATH_FORMAT.format(file_id=file_index)
+        with open(storage_file_path, 'wt') as storage_file:
+            storage_file.write(file_content)
